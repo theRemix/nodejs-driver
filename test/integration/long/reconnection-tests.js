@@ -199,6 +199,73 @@ describe('reconnection', function () {
         }
       ], done);
     });
+    it('execute prepared should not be affected by nodes reconnections and schema changes', function (done) {
+      var dummyClient = new Client(helper.baseOptions);
+      var keyspace = helper.getRandomName('ks');
+      var table = helper.getRandomName('tbl');
+      var insertQuery = util.format('INSERT INTO %s (id1, id2, val) VALUES (?, ?, ?)', table);
+      var selectQuery = util.format('SELECT val, id1, id2 FROM %s WHERE id1 = ? AND id2 = ?', table);
+      var createTableQuery = util.format("CREATE TABLE %s.%s (id1 text, id2 text, val text, PRIMARY KEY (id1, id2))", keyspace, table);
+      var queriedHosts = {};
+      var client = new Client(utils.extend({
+        keyspace: keyspace,
+        contactPoints: helper.baseOptions.contactPoints,
+        policies: { reconnection: new reconnection.ConstantReconnectionPolicy(300)},
+        pooling: { heartBeatInterval: 0}
+      }));
+      async.series([
+        function removeCcm(next) {
+          helper.ccmHelper.remove(function () {
+            //Ignore error
+            next()
+          });
+        },
+        helper.ccmHelper.start(3),
+        helper.toTask(dummyClient.execute, dummyClient, helper.createKeyspaceCql(keyspace, 1)),
+        helper.toTask(dummyClient.execute, dummyClient, createTableQuery),
+        //Connect using an active keyspace
+        client.connect.bind(client),
+        function insert1(next) {
+          async.times(10, function (n, timesNext) {
+            client.execute(insertQuery, ['a', n.toString(), n.toString()], {prepare: true}, timesNext);
+          }, next);
+        },
+        function select1(next) {
+          async.times(10, function (n, timesNext) {
+            client.execute(selectQuery, ['a', n.toString()], {prepare: true}, timesNext);
+          }, next);
+        },
+        //Kill node1
+        helper.toTask(helper.ccmHelper.exec, null, ['node2', 'stop']),
+        function (next) {
+          setTimeout(next, 5000);
+        },
+        function dropTable(next) {
+          dummyClient.execute(util.format('DROP TABLE %s.%s', keyspace, table), next)
+        },
+        function recreateTable(next) {
+          createTableQuery = util.format("CREATE TABLE %s.%s (id2 text, a text, z2 text, id1 text, id3 text, val text, PRIMARY KEY (id1, id2, id3))", keyspace, table);
+          dummyClient.execute(createTableQuery, next)
+        },
+        //restart node
+        helper.toTask(helper.ccmHelper.exec, null, ['node2', 'start']),
+        function (next) {
+          setTimeout(next, 2000);
+        },
+        function select2(next) {
+          async.times(10, function (n, timesNext) {
+            client.execute(selectQuery, ['a', n.toString()], {prepare: true}, timesNext);
+          }, function (err, results) {
+            assert.ifError(err);
+            results.forEach(function (r) {
+              queriedHosts[helper.lastOctetOf(r.info.queriedHost)] = true;
+            });
+            assert.strictEqual(Object.keys(queriedHosts).length, 3);
+            next();
+          });
+        }
+      ], done);
+    });
   });
   describe('when connections are silently dropped', function () {
     it('should callback in err the next request', function (done) {
