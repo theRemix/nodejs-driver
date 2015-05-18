@@ -556,6 +556,53 @@ describe('Client', function () {
         ], done);
       });
     });
+    describe('with schema changing', function () {
+      it('should not be affected by columns being added', function (done) {
+        var dummyClient = new Client(helper.baseOptions);
+        var keyspace = helper.getRandomName('ks');
+        var table = helper.getRandomName('tbl');
+        var insertQuery = util.format('INSERT INTO %s (a, b, c) VALUES (?, ?, ?)', table);
+        var selectQuery = util.format('SELECT a, b, c FROM %s', table);
+        var createTableQuery = util.format('CREATE TABLE %s.%s (a text, b text, c text, PRIMARY KEY (a, b))', keyspace, table);
+        var queriedHosts = {};
+        var client = new Client(utils.extend({
+          keyspace: keyspace,
+          contactPoints: helper.baseOptions.contactPoints,
+          pooling: { heartBeatInterval: 0}
+        }));
+        async.series([
+          helper.toTask(dummyClient.execute, dummyClient, helper.createKeyspaceCql(keyspace, 1)),
+          helper.toTask(dummyClient.execute, dummyClient, createTableQuery),
+          //Connect using an active keyspace
+          client.connect.bind(client),
+          function insert1(next) {
+            async.times(1, function (n, timesNext) {
+              client.execute(insertQuery, ['a', n.toString(), n.toString()], {prepare: true}, timesNext);
+            }, next);
+          },
+          function select1(next) {
+            async.timesSeries(10, function (n, timesNext) {
+              client.execute(selectQuery, [], {prepare: true}, timesNext);
+            }, next);
+          },
+          function alterTable2(next) {
+            dummyClient.execute(util.format('ALTER TABLE %s.%s ADD d list<text>', keyspace, table), next)
+          },
+          function select2(next) {
+            async.timesSeries(10, function (n, timesNext) {
+              client.execute(selectQuery, [], {prepare: true}, timesNext);
+            }, function (err, results) {
+              assert.ifError(err);
+              results.forEach(function (r) {
+                queriedHosts[helper.lastOctetOf(r.info.queriedHost)] = true;
+              });
+              assert.strictEqual(Object.keys(queriedHosts).length, 3);
+              next();
+            });
+          }
+        ], done);
+      });
+    });
   });
 });
 

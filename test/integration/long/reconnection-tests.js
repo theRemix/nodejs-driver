@@ -245,7 +245,7 @@ describe('reconnection', function () {
         },
         function recreateTable(next) {
           createTableQuery = util.format("CREATE TABLE %s.%s (id2 text, a text, z2 text, id1 text, id3 text, val text, PRIMARY KEY (id1, id2, id3))", keyspace, table);
-          dummyClient.execute(createTableQuery, next)
+          dummyClient.execute(createTableQuery, next);
         },
         //restart node
         helper.toTask(helper.ccmHelper.exec, null, ['node2', 'start']),
